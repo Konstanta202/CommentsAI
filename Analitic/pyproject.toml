@@ -1,0 +1,15 @@
+[project]
+name = "analitic"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "asynch>=0.3.1",
+    "clickhouse-driver>=0.2.10",
+    "fastapi>=0.129.0",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.13.0",
+    "python-dotenv>=1.2.1",
+    "uvicorn>=0.41.0",
+]

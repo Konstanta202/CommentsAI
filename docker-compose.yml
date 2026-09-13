@@ -1,0 +1,192 @@
+version: '3.8'
+
+services:
+  # Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    hostname: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    hostname: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9101:9101"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_DELETE_TOPIC_ENABLE: 'true'
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - default  # ← должна быть та же сеть что у parser
+  # Redis для кэширования
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  # PostgreSQL для User Service
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: smanalytics
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  # Clickhouse для Analitic Service
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: clickhouse_analitic
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - ./Analitic/docker/clickhouse/init:/docker-entrypoint-initdb.d
+      - clickhouse_data:/var/lib/clickhouse
+    networks:
+      - analitic_net
+
+  # Kafka UI для мониторинга
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+
+  # User service
+  users:
+    build: ./UserService
+    env_file:
+      - UserService/ENV/.env 
+    volumes:
+    - ./UserService/:/app
+    ports:
+      - "8003:80"
+    depends_on:
+      - postgres
+
+  # Analitic service
+  analitic:
+    build:
+      context: ./Analitic
+      dockerfile: Dockerfile
+    container_name: analitic_service
+    env_file:
+      - ./Analitic/.env
+    ports:
+      - "8006:80"
+    depends_on:
+      - clickhouse
+    networks:
+    - analitic_net
+
+  # API Gateway
+  api-gateway:
+    build: ./Gateway
+    env_file:
+      - Gateway/ENV/.env 
+    volumes:
+    - ./Gateway/:/app
+    ports:
+      - "8000:80"
+    networks:
+    - vk-network
+    depends_on:
+      - users
+      - vk-service
+      - analitic
+
+  # VK Rest Service
+  vk-service:
+    build: ./VKParserServiceFastApi
+    ports:
+      - "8005:80"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:1111@vkservice-db:5432/vkservice_db
+    depends_on:
+      - vkservice-db
+    volumes:
+      - ./VKParserServiceFastApi/:/app
+    networks:
+    - vk-network
+  vkservice-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: vkservice_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 1111
+    ports:
+      - "15433:5432"
+    volumes:
+      - ./infrastructure/db/create_db.sql:/docker-entrypoint-initdb.d/create_db.sql
+      - db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+    - vk-network
+  parser:
+    build: 
+      context: ./VKParser
+      dockerfile: Dockerfile
+    container_name: vk-parser-watch
+    depends_on:
+      - vkservice-db
+      - kafka
+    env_file: ./VKParser/.env
+    volumes:
+      - parser_data:/app/data
+    networks:
+      - vk-network
+      - default
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  redis-data:
+  postgres-data:
+  parser_data:
+  clickhouse_data:
+
+networks:
+  vk-network:
+    driver: bridge
+  analitic_net:
+    driver: bridge

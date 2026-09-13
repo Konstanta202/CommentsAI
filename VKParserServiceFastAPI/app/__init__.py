@@ -1,0 +1,1 @@
+"""VK Parser FastAPI Application"""
